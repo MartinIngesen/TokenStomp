@@ -4,7 +4,7 @@ using System.Runtime.InteropServices;
 
 namespace TokenStomp
 {
-    class Program
+    public class Program
     {
 
         [Flags()]
@@ -159,7 +159,7 @@ namespace TokenStomp
         );
 
 
-        static void Main(string[] args)
+        public static void Main(string[] args)
         {
             string ascii = @"
   ________           ▄▄▄▄▄▄▄ ▄▄▄▄▄▄▄ ▄▄▄   ▄ ▄▄▄▄▄▄▄ ▄▄    ▄ ▄▄▄▄▄▄▄ ▄▄▄▄▄▄▄ ▄▄▄▄▄▄▄ ▄▄   ▄▄ ▄▄▄▄▄▄▄
